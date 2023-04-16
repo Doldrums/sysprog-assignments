@@ -316,8 +316,7 @@ test_resize(void)
 #endif
 }
 
-int
-main(void)
+int main(void)
 {
 	unit_test_start();
 

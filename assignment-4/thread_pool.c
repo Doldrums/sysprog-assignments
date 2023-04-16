@@ -17,23 +17,23 @@ struct thread_task {
 struct thread_pool {
   pthread_t *threads;
   int thread_count;
-  int free_threads;
   int max_thread_count;
   int task_count;
   struct thread_task *first;
   struct thread_task *last;
   pthread_mutex_t queue_mutex;
   pthread_cond_t queue_not_empty;
-  pthread_mutex_t free_threads_mutex;
+  int idle_threads;
+  pthread_mutex_t idle_threads_mutex;
 };
 
 void *thread_pool_worker(void *arg) {
   struct thread_pool *pool = arg;
 
   while (1) {
-    pthread_mutex_lock(&pool->free_threads_mutex);
-    pool->free_threads++;
-    pthread_mutex_unlock(&pool->free_threads_mutex);
+    pthread_mutex_lock(&pool->idle_threads_mutex);
+    pool->idle_threads++;
+    pthread_mutex_unlock(&pool->idle_threads_mutex);
 
     struct thread_task *task;
     pthread_mutex_lock(&pool->queue_mutex);
@@ -41,9 +41,9 @@ void *thread_pool_worker(void *arg) {
       pthread_cond_wait(&pool->queue_not_empty, &pool->queue_mutex);
     }
 
-    pthread_mutex_lock(&pool->free_threads_mutex);
-    pool->free_threads--;
-    pthread_mutex_unlock(&pool->free_threads_mutex);
+    pthread_mutex_lock(&pool->idle_threads_mutex);
+    pool->idle_threads--;
+    pthread_mutex_unlock(&pool->idle_threads_mutex);
 
     task = pool->first;
     pool->first = task->next;
@@ -71,14 +71,14 @@ int thread_pool_new(int max_thread_count, struct thread_pool **pool) {
 
   new_pool->max_thread_count = max_thread_count;
   new_pool->thread_count = 0;
-  new_pool->free_threads = 0;
+  new_pool->idle_threads = 0;
   new_pool->task_count = 0;
   new_pool->threads = malloc(max_thread_count * sizeof(pthread_t));
   new_pool->first = NULL;
   new_pool->last = NULL;
   pthread_cond_init(&new_pool->queue_not_empty, NULL);
   pthread_mutex_init(&new_pool->queue_mutex, NULL);
-  pthread_mutex_init(&new_pool->free_threads_mutex, NULL);
+  pthread_mutex_init(&new_pool->idle_threads_mutex, NULL);
 
   *pool = new_pool;
   return 0;
@@ -100,7 +100,7 @@ int thread_pool_delete(struct thread_pool *pool) {
   free(pool->threads);
 
   pthread_mutex_destroy(&pool->queue_mutex);
-  pthread_mutex_destroy(&pool->free_threads_mutex);
+  pthread_mutex_destroy(&pool->idle_threads_mutex);
   pthread_cond_destroy(&pool->queue_not_empty);
 
   free(pool);
@@ -127,7 +127,7 @@ int thread_pool_push_task(struct thread_pool *pool, struct thread_task *task) {
   pthread_cond_broadcast(&pool->queue_not_empty);
   pthread_mutex_unlock(&pool->queue_mutex);
 
-  if (pool->free_threads == 0 && pool->thread_count < pool->max_thread_count) {
+  if (pool->idle_threads == 0 && pool->thread_count < pool->max_thread_count) {
     pthread_create(&pool->threads[pool->thread_count++], NULL,
                    thread_pool_worker, pool);
   }
@@ -163,14 +163,14 @@ int thread_task_join(struct thread_task *task, void **result) {
     return TPOOL_ERR_TASK_NOT_PUSHED;
   }
 
-  pthread_mutex_t finished_mutex;
-  pthread_mutex_init(&finished_mutex, NULL);
-  pthread_mutex_lock(&finished_mutex);
   while (task->status != TTASK_STATUS_FINISHED) {
+    pthread_mutex_t finished_mutex;
+    pthread_mutex_init(&finished_mutex, NULL);
+    pthread_mutex_lock(&finished_mutex);
     pthread_cond_wait(&task->finished, &finished_mutex);
+    pthread_mutex_unlock(&finished_mutex);
+    pthread_mutex_destroy(&finished_mutex);
   }
-  pthread_mutex_unlock(&finished_mutex);
-  pthread_mutex_destroy(&finished_mutex);
 
   *result = task->result;
 
