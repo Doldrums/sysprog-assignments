@@ -6,8 +6,7 @@
 
 typedef struct files {
 	const char *name;
-	int *sorted;
-	int count;
+	FILE *tmp;
 
 	struct files *next;
 } files;
@@ -24,7 +23,7 @@ size_t pool_size;
 long get_current_time_in_microseconds()
 {
     struct timespec tp;
-    clock_gettime(CLOCK_MONOTONIC, &tp);
+    clock_gettime(CLOCK_REALTIME, &tp);
     return (long) (tp.tv_sec * 1000000 + tp.tv_nsec / 1000);
 }
 
@@ -77,6 +76,21 @@ void print_array(int* arr, int size) {
     printf("\n");
 }
 
+FILE* write_array_to_tmp_file(int *arr, int size) {
+    FILE *fp = tmpfile();
+
+    for (int i = 0; i < size; i++) {
+        fprintf(fp, "%d", arr[i]);
+
+        if (i != size - 1) {
+            fprintf(fp, " ");
+        }
+    }
+
+	rewind(fp);
+	return fp;
+}
+
 static int coroutine_func_f(void *context)
 {
 	struct coro *this = coro_this();
@@ -104,20 +118,19 @@ static int coroutine_func_f(void *context)
 
 		quick_sort(numbers, 0, cnt - 1, *id);
 
-		file->sorted = numbers;
-		file->count = cnt;
-		fclose(fp);
+		file->tmp = write_array_to_tmp_file(numbers, cnt);
+		free(numbers);
 	}
 
 	time_taken[*id] += get_current_time_in_microseconds() - last_yield[*id];
-	printf("coroutine %d finsihed with %lld switches and executing time %llu microseconds\n", *id, coro_switch_count(this), time_taken[*id]);
+	printf("coroutine %d finsihed with %lld switches and executing time %f seconds\n", *id, coro_switch_count(this), time_taken[*id] * 0.000001);
 
 	free(context);
 	return 0;
 }
 
 int main(int argc, char **argv) {
-    uint64_t t = get_current_time_in_microseconds(); 
+    long t = get_current_time_in_microseconds(); 
 
 	pool_size = strtol(argv[2], NULL, 10);
 	target_latency = strtol(argv[1], NULL, 10) / pool_size;
@@ -152,21 +165,27 @@ int main(int argc, char **argv) {
 		coro_delete(c);
 	}
 
-	int cnt = argc - 3;
-	int* cursors = calloc(cnt, sizeof(int));
-	int **sorted = calloc(cnt, sizeof(int*));
-	int *sorted_size = calloc(cnt, sizeof(int));
-	
+	FILE **tmp_files = calloc(argc - 3, sizeof(FILE *));
+
 	queue_pointer = file_queue;
-	cnt = 0;
+	int cnt = 0;
 	while (queue_pointer != NULL) {
-		sorted[cnt] = queue_pointer->sorted;
-		sorted_size[cnt] = queue_pointer->count;
+		tmp_files[cnt] = queue_pointer->tmp;
 		queue_pointer = queue_pointer->next;
 		cnt++;
 	}
 
+	int* cursors = calloc(cnt, sizeof(int));
+	bool* file_processed = calloc(cnt, sizeof(bool));
 	bool merged = false;
+
+	for (int i = 0; i < cnt; i++) {
+		file_processed[i] = false;
+		if (fscanf(tmp_files[i], "%d", &cursors[i]) == EOF) {
+			file_processed[i] = true;
+			fclose(tmp_files[i]);
+		}
+	}
 
 	FILE *output = fopen("output.txt", "w");
 
@@ -175,36 +194,46 @@ int main(int argc, char **argv) {
 		int min = 0;
 
 		for (int ind = 0; ind < cnt; ind++) {
-			if (min_ind == argc && cursors[ind] < sorted_size[ind]) {
-				min = sorted[ind][cursors[ind]];
+			if (min_ind == argc && !file_processed[ind]) {
+				min = cursors[ind];
 				min_ind = ind;
-			} else if (cursors[ind] < sorted_size[ind] && sorted[ind][cursors[ind]] < min) {
-				min = sorted[ind][cursors[ind]];
+			} else if (cursors[ind] < min && !file_processed[ind]) {
+				min = cursors[ind];
 				min_ind = ind;
 			}
 		}
 
 		fprintf(output, "%d ", min);
 
-		cursors[min_ind] += 1;
+		if (fscanf(tmp_files[min_ind], "%d", &cursors[min_ind]) == EOF) {
+			file_processed[min_ind] = true;
+			fclose(tmp_files[min_ind]);
+		}
 
 		merged = true;
 		for (int ind = 0; ind < cnt; ind++) {
-			merged = merged && cursors[ind] == sorted_size[ind];
+			merged = merged && file_processed[ind];
 		}
 	}
 	fclose(output);
 
-	free(sorted);
+	free(tmp_files);
 	free(cursors);
-	free(sorted_size);
-	free(time_taken);
-	free(last_yield);
-	free(file_queue);
+	free(file_processed);
+
+	queue_pointer = file_queue;
+	while (queue_pointer != NULL) {
+		files* current = queue_pointer;
+		queue_pointer = queue_pointer->next;
+		free(current);
+	}
 
 	t = get_current_time_in_microseconds() - t; 
 
-	printf("Total time taken is %llu microseconds\n", t);
+	printf("Total time taken is %f seconds\n", t * 0.000001);
+
+	free(time_taken);
+	free(last_yield);
 
 	return 0;
 }
