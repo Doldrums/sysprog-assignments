@@ -60,7 +60,7 @@ char *read_token(char *str, int *start, int end) {
   int token_end = cursor;
   cursor = token_start;
   while (cursor < token_end) {
-    if (str[cursor] == '\\') {
+    if (str[cursor] == '\\' && str[cursor + 1] != 'n') {
       cursor++;
     }
     token[token_cursor++] = str[cursor++];
@@ -199,18 +199,50 @@ cmd **parse_line(char *line, int line_len, int *commands_count) {
   return commands;
 }
 
-char *read_line(int *len) {
+char *read_line(int *len, bool* eof) {
   int buffer_size = 64; // initial size of buffer
   char *buffer = malloc(sizeof(char) * buffer_size);
   int index = 0;
-  int c;
+  char c;
+
+  bool escaped = false;
+  bool in_quote = false;
+  char quote = '~';
 
   if (!buffer) {
     printf("Error: memory allocation failed.\n");
     exit(EXIT_FAILURE);
   }
 
-  while ((c = getchar()) != '\n' && c != EOF) {
+  while (true) {
+    c = getchar();
+
+    if (c == EOF) {
+      *eof = true;
+      break;
+    }
+
+    if (c == '\n') {
+      if (escaped) {
+        index--;
+        escaped = false;
+        continue;
+      } else if (!in_quote) {
+        break;
+      }
+    }
+    if (escaped) {
+      escaped = false;
+    } else if (c == '\\') {
+      escaped = true;
+    } else if (c == '#') {
+      break;
+    } else if (in_quote && c == quote) {
+      in_quote = false;
+    } else if (!in_quote && (c == '"' || c == '\'')) {
+      in_quote = true;
+      quote = c;
+    } 
     buffer[index++] = c;
     if (index == buffer_size) {
       buffer_size *= 2; // double buffer size if it's full
@@ -229,18 +261,13 @@ char *read_line(int *len) {
 }
 
 int main() {
-  while (true) {
+  bool eof = false;
+
+  while (!eof) {
     char cwd[1024];
 
-    if (getcwd(cwd, sizeof(cwd)) == NULL) {
-      perror("getcwd");
-      return 1;
-    }
-
-    printf("\x1b[34m%s\x1b[0m ", cwd);
-
     int line_len = 0;
-    char *line = read_line(&line_len);
+    char *line = read_line(&line_len, &eof);
 
     int commands_count = 0;
     cmd **commands = parse_line(line, line_len, &commands_count);
@@ -269,6 +296,13 @@ int main() {
           printf("cd: no such file or directory: %s\n", commands[i]->argv[1]);
         }
         continue;
+      } else if (strcmp(commands[i]->name, "exit") == 0 && commands_count == 1) {
+        if (commands[i]->argc > 0) {
+          exit(atol(commands[i]->argv[1]));
+        } else {
+          exit(0);
+        }
+        break;
       }
 
       command_pids[i] = fork();
@@ -287,7 +321,7 @@ int main() {
             fd = open(commands[i]->redirect_file, O_WRONLY | O_CREAT | O_APPEND,
                       S_IRUSR | S_IWUSR); // open file for writing
           } else {
-            fd = open(commands[i]->redirect_file, O_WRONLY | O_CREAT,
+            fd = open(commands[i]->redirect_file, O_WRONLY | O_CREAT | O_TRUNC,
                       S_IRUSR | S_IWUSR); // open file for writing
           }
 
