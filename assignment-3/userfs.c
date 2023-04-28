@@ -7,7 +7,7 @@
 
 enum {
   BLOCK_SIZE = 512,
-  MAX_FILE_SIZE = 1024 * 1024 * 1024,
+  MAX_FILE_SIZE = 1024 * 1024 * 100,
 };
 
 /** Global error code. Set from any function on any error. */
@@ -247,7 +247,7 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
     block = filedesc->block = filedesc->file->block_list;
   }
 
-  if (filedesc->block->index * BLOCK_SIZE + block->occupied + size >
+  if (filedesc->block->index * BLOCK_SIZE + filedesc->offset + size >
       MAX_FILE_SIZE) {
     ufs_error_code = UFS_ERR_NO_MEM;
     return -1;
@@ -286,8 +286,9 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
     offset += writable_bytes;
     written_bytes += writable_bytes;
     remaining_size -= writable_bytes;
-    // printf("writable_bytes: %d\n", offset);
-    block->occupied = offset;
+    if (offset > block->occupied) {
+      block->occupied = offset;
+    }
   }
 
   // Update the file descriptor's offset and block
@@ -430,21 +431,36 @@ int ufs_resize(int fd, size_t new_size) {
     }
   } else {
     ssize_t remaining_size = file_size - new_size;
+    struct block *to_free = NULL;
+    
     while (remaining_size > BLOCK_SIZE) {
       struct block *block = f->last_block;
       f->last_block = block->prev;
       free(block->memory);
-      free(block);
+      block->next = to_free;
+      to_free = block;
       remaining_size -= BLOCK_SIZE;
     }
-    f->last_block->occupied = BLOCK_SIZE - remaining_size;
+
+    if (f->last_block->occupied > BLOCK_SIZE - remaining_size) {
+      f->last_block->occupied = BLOCK_SIZE - remaining_size;
+    }
+    f->last_block->next = NULL;
 
     for (int i = 0; i < file_descriptor_count; i++) {
       if (file_descriptors[i] != NULL && file_descriptors[i]->file == f &&
           file_descriptors[i]->block->index >= f->last_block->index) {
         file_descriptors[i]->block = f->last_block;
-        file_descriptors[i]->offset = f->last_block->occupied;
+        if (file_descriptors[i]->offset > f->last_block->occupied) {
+          file_descriptors[i]->offset = f->last_block->occupied;
+        }
       }
+    }
+
+    while (to_free != NULL) {
+      struct block *next = to_free->next;
+      free(to_free);
+      to_free = next;
     }
   }
 
