@@ -19,6 +19,7 @@ enum thread_task_status {
   TTASK_STATUS_PUSHED,
   TTASK_STATUS_RUNNING,
   TTASK_STATUS_FINISHED,
+  TTASK_STATUS_JOINED,
 };
 
 enum thread_pool_errcode {
@@ -127,7 +128,8 @@ int thread_task_join(struct thread_task *task, void **result);
  *     - TPOOL_ERR_TASK_NOT_PUSHED - task is not pushed to a pool.
  *     - TPOOL_ERR_TIMEOUT - join timeouted.
  */
-int thread_task_join2(struct thread_task *task, double timeout, void **result);
+int thread_task_timed_join(struct thread_task *task, double timeout,
+                           void **result);
 
 /**
  * Delete a task, free its memory.
